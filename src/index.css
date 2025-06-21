@@ -8,3 +8,16 @@ body {
   height: 100vh;
   position: relative;
 }
+
+.location-icon {
+  font-size: 2rem;
+  color: red;
+}
+
+.loader {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+}
