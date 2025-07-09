@@ -1,10 +1,33 @@
-import { useState } from 'react'
+import { useState, useRef, useMemo } from 'react'
 import GoogleMapReact from 'google-map-react'
+import Supercluster from 'supercluster'
 import LocationMarker from './LocationMarker'
 import LocationInfoBox from './LocationInfoBox'
 
-const NATURAL_EVENT_WILDFIRE = "wildfires";
+// You will need to create this component for cluster display
+const ClusterMarker = ({ lat, lng, pointCount, onClick }) => (
+    <div
+        style={{
+            color: 'white',
+            background: '#1976d2',
+            borderRadius: '50%',
+            padding: '8px 12px',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            border: '2px solid #fff',
+            boxShadow: '0 0 6px #1976d2'
+        }}
+        onClick={onClick}
+        lat={lat}
+        lng={lng}
+    >
+        {pointCount}
+    </div>
+);
 
+const NATURAL_EVENT_WILDFIRE = "wildfires"; // Will hold the category ID for wildfires
+
+// Default center and zoom for the map
 const defaultProps = {
     center: {
         lat: 42.3265,
@@ -13,91 +36,113 @@ const defaultProps = {
     zoom: 6
 }
 
+// Main Map component
+// Accepts eventData prop which is an array of wildfire events
+// Each event should have a geometry field with coordinates and categories 
 const Map = ({ eventData, center = defaultProps.center, zoom = defaultProps.zoom }) => {
     const [locationInfo, setLocationInfo] = useState(null)
+    const [bounds, setBounds] = useState(null)
+    const [mapZoom, setMapZoom] = useState(zoom)
 
-    const [bounds, setBounds] = useState(null);
+    // Filter for wildfires and map to GeoJSON format
+    const points = useMemo(
+        () =>
+            eventData
+                .filter(ev => ev.categories[0].id === NATURAL_EVENT_WILDFIRE)
+                .map(ev => ({
+                    type: "Feature",
+                    properties: { cluster: false, eventId: ev.id, event: ev },
+                    geometry: {
+                        type: "Point",
+                        coordinates: [
+                            ev.geometry[0].coordinates[0],
+                            ev.geometry[0].coordinates[1]
+                        ]
+                    }
+                })),
+        [eventData]
+    )
 
-    // Normalize longitude to [-180, 180]
-    const normalizeLng = lng => {
-        let n = ((lng + 180) % 360 + 360) % 360 - 180;
-        // Handle -180 edge case
-        if (n === -180) return 180;
-        return n;
-    };
-
-    // Rectify longtitude bounds to handle antimeridian crossing (+180/-180 degrees)
-    const isLngInBounds = (lng, lng1, lng2) => {
-        lng = normalizeLng(lng);
-        lng1 = normalizeLng(lng1);
-        lng2 = normalizeLng(lng2);
-        if (lng1 <= lng2) {
-            return lng >= lng1 && lng <= lng2;
-        } else {
-            // Antimeridian crossing
-            return lng >= lng1 || lng <= lng2;
-        }
-    };
-
-    // Rectify latitude bounds to handle map flipping
-    const isLatInBounds = (lat, lat1, lat2) => {
-        const minLat = Math.min(lat1, lat2);
-        const maxLat = Math.max(lat1, lat2);
-        return lat >= minLat && lat <= maxLat;
-};
-
-    // Filter the event data to only include wildfires
-    // and create markers for each wildfire event
-    // The markers will be displayed on the map
-    // when the map is rendered.
-    // The markers will be clickable and will display
-    // the location info in a box when clicked.
-    // The location info will be displayed in a box
-    // at the bottom of the map.    
-
-    const filteredEvents = bounds
-        ? eventData.filter(ev => {
-            if (ev.categories[0].id !== NATURAL_EVENT_WILDFIRE) return false;
-            const lat = ev.geometry[0].coordinates[1];
-            const lng = ev.geometry[0].coordinates[0];
-            return (
-                isLatInBounds(lat, bounds.nw.lat, bounds.se.lat) &&
-                isLngInBounds(lng, bounds.nw.lng, bounds.se.lng)
-            );
+    // Set up Supercluster
+    const superclusterRef = useRef(
+        new Supercluster({
+            radius: 60,
+            maxZoom: 20,
         })
-        : eventData.filter(ev => ev.categories[0].id === NATURAL_EVENT_WILDFIRE);
+    )
 
+    // Load points into Supercluster API
+    useMemo(() => {
+        superclusterRef.current.load(points)
+    }, [points])
 
-    const markers = filteredEvents.map((ev, index) => (
-        <LocationMarker
-            key={ev.id || index}
-            lat={ev.geometry[0].coordinates[1]}
-            lng={ev.geometry[0].coordinates[0]}
-            onClick={() => setLocationInfo({ id: ev.id, title: ev.title })}
-        />
-    ));
+    // Get clusters for current bounds and zoom
+    const clusters = useMemo(() => {
+        if (!bounds) return []
+        // GoogleMapReact gives bounds as {nw, se, sw, ne}
+        // Supercluster expects [westLng, southLat, eastLng, northLat]
+        return superclusterRef.current.getClusters(
+            [
+                bounds.sw.lng,
+                bounds.sw.lat,
+                bounds.ne.lng,
+                bounds.ne.lat
+            ],
+            mapZoom
+        )
+    }, [bounds, mapZoom, points])
 
+    // Render the map with clusters and markers
+    // Each cluster is represented by ClusterMarker, and each event by LocationMarker
+    // Clicking on a cluster or marker will set the location info to display in LocationInfoBox
+    // LocationInfoBox is a separate component that displays information about the selected event
     return (
         <div className="map">
             <GoogleMapReact
                 bootstrapURLKeys={{ key: 'AIzaSyCQjKjYCnnfr0Y08b96337CGTFHoB5z12s' }}
-                defaultCenter={ center }
-                defaultZoom={ zoom }
+                defaultCenter={center}
+                defaultZoom={zoom}
                 onChange={({ center, zoom, bounds }) => {
-                    setBounds(bounds);
-                    console.log('BOUNDS: ' + bounds.nw.lat + ', ' + bounds.nw.lng + ' - ' + bounds.se.lat + ', ' + bounds.se.lng);
-                    console.log('CENTER: ' + center.lat + ', ' + center.lng)
-                    console.log('ZOOM: ' + zoom)
+                    setBounds(bounds)
+                    setMapZoom(zoom)
+                    console.log('BOUNDS:', bounds)
+                    console.log('CENTER:', center)
+                    console.log('ZOOM:', zoom)
                 }}
-                    
             >
-                {markers}
+                {clusters.map(cluster => {
+                    const [lng, lat] = cluster.geometry.coordinates
+                    if (cluster.properties.cluster) {
+                        return (
+                            <ClusterMarker
+                                key={`cluster-${cluster.id}`}
+                                lat={lat}
+                                lng={lng}
+                                pointCount={cluster.properties.point_count}
+                                onClick={() => {
+                                    // Optionally: zoom in on cluster click
+                                }}
+                            />
+                        )
+                    }
+                    return (
+                        <LocationMarker
+                            key={cluster.properties.eventId}
+                            lat={lat}
+                            lng={lng}
+                            onClick={() =>
+                                setLocationInfo({
+                                    id: cluster.properties.eventId,
+                                    title: cluster.properties.event.title
+                                })
+                            }
+                        />
+                    )
+                })}
             </GoogleMapReact>
             {locationInfo && <LocationInfoBox info={locationInfo} />}
         </div>
     )
 }
-
-
 
 export default Map
